@@ -2,19 +2,29 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<title>完全P2Pマルチチャット</title>
+<title>Gist連携 P2Pマルチチャット</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-body{font-family:sans-serif;background:#f0f0f0;margin:0;text-align:center}
-#chat{max-width:600px;margin:20px auto;background:#fff;padding:20px;border-radius:10px;box-shadow:0 0 10px #ccc}
-#messages{height:300px;overflow-y:auto;border:1px solid #ccc;padding:5px;text-align:left;margin-bottom:10px}
-.msg{margin:5px 0}
-input,button,textarea{width:100%;padding:8px;margin:5px 0}
+body{font-family:sans-serif;background:#f0f0f0;margin:0;text-align:center;}
+#roomDiv,#chat{max-width:600px;margin:20px auto;background:#fff;padding:20px;border-radius:10px;box-shadow:0 0 10px #ccc;}
+#messages{height:300px;overflow-y:auto;border:1px solid #ccc;padding:5px;text-align:left;margin-bottom:10px;}
+.msg{margin:5px 0;}
+input,button,textarea{width:100%;padding:8px;margin:5px 0;}
+.roomItem{cursor:pointer;color:blue;text-decoration:underline;margin:3px 0;}
 </style>
 </head>
 <body>
-<div id="chat">
-<h2>🌐 GitHub P2P完全マルチチャット</h2>
+<div id="roomDiv">
+<h2>ルーム作成 / ルーム一覧</h2>
+<input id="roomName" placeholder="ルーム名">
+<input id="roomPass" placeholder="パスワード（任意）">
+<button id="createRoom">ルーム作成</button>
+<h3>ルーム一覧</h3>
+<div id="roomList"></div>
+</div>
+
+<div id="chat" style="display:none">
+<h2>🌐 P2Pチャット</h2>
 <div id="messages"></div>
 <input id="name" placeholder="名前を入力">
 <input id="text" placeholder="メッセージを入力">
@@ -22,105 +32,92 @@ input,button,textarea{width:100%;padding:8px;margin:5px 0}
 <button id="voice">音声ON/OFF</button>
 <input type="file" id="fileInput">
 <hr>
-<h3>ルーム接続</h3>
-<textarea id="signal" placeholder="接続データ自動同期"></textarea>
+<h3>接続</h3>
+<textarea id="signal" placeholder="接続データ"></textarea>
 <button id="copy">接続データをコピー</button>
 <button id="connect">接続</button>
 </div>
 
 <script>
-const params=new URLSearchParams(window.location.search);
-const room=params.get("room")||"default";
-const messages=document.getElementById("messages");
-let localName="", pcList={}, channelList={}, localStream=null;
+// ==== 設定 ====
+const GIST_URL = "https://gist.githubusercontent.com/ユーザー名/GIST_ID/raw/rooms.json"; // 公開Gist URL
+const FETCH_INTERVAL = 5000; // 5秒ごと
+let rooms=[], localName="", pcList={}, channelList={}, localStream=null;
 
+// ==== ルーム一覧同期 ====
+async function fetchRooms(){
+  try{
+    const res = await fetch(GIST_URL);
+    rooms = await res.json();
+    renderRoomList();
+  }catch(e){console.error("ルーム取得失敗", e);}
+}
+function renderRoomList(){
+  const roomListDiv=document.getElementById("roomList");
+  roomListDiv.innerHTML="";
+  rooms.forEach(r=>{
+    const div=document.createElement("div");
+    div.textContent=r.name + (r.password?" 🔒":"");
+    div.className="roomItem";
+    div.onclick=()=>joinRoom(r);
+    roomListDiv.appendChild(div);
+  });
+}
+setInterval(fetchRooms,FETCH_INTERVAL);
+fetchRooms();
+
+// ==== ルーム作成（ブラウザからはPUT不可、GitHub Actions推奨） ====
+document.getElementById("createRoom").onclick=()=>{
+  const name=document.getElementById("roomName").value.trim();
+  const pass=document.getElementById("roomPass").value.trim();
+  if(!name) return alert("ルーム名を入力");
+  if(rooms.find(r=>r.name===name)) return alert("同名ルームがあります");
+  alert("ルーム作成はGitHub Actionsで更新してください\nブラウザからの自動更新はできません。");
+}
+
+// ==== ルーム参加 ====
+function joinRoom(room){
+  if(room.password){
+    const inputPass=prompt("パスワードを入力");
+    if(inputPass!==room.password) return alert("パスワード違います");
+  }
+  document.getElementById("roomDiv").style.display="none";
+  document.getElementById("chat").style.display="block";
+  log("システム: "+room.name+" に入室","system");
+}
+
+// ==== チャット機能 ====
+const messages=document.getElementById("messages");
 function log(msg,who="system"){
   const div=document.createElement("div");
   div.textContent=msg;
   div.className="msg "+who;
   messages.appendChild(div);
   messages.scrollTop=9999;
-  if(who==="you"||who==="other"){
-    let history=JSON.parse(localStorage.getItem("chat_"+room)||"[]");
-    history.push(msg);
-    localStorage.setItem("chat_"+room,JSON.stringify(history));
-  }
 }
-let history=JSON.parse(localStorage.getItem("chat_"+room)||"[]");
-history.forEach(msg=>log(msg,"history"));
 
-const servers={iceServers:[{urls:"stun:stun.l.google.com:19302"}]};
+let servers={iceServers:[{urls:"stun:stun.l.google.com:19302"}]};
 
 function createPeer(id,offer=false){
   const pc=new RTCPeerConnection(servers);
-
   if(localStream) pc.addTrack(localStream.getTracks()[0],localStream);
-
-  if(offer){
-    const ch=pc.createDataChannel("chat");
-    channelList[id]=ch;
-    setupChannel(ch);
-  }else{
-    pc.ondatachannel=e=>{
-      const ch=e.channel;
-      channelList[id]=ch;
-      setupChannel(ch);
-    }
-  }
-
-  pc.onicecandidate=e=>{
-    if(e.candidate) return;
-    document.getElementById("signal").value=JSON.stringify(pc.localDescription);
-  }
-
-  pc.ontrack=e=>{
-    const audio=document.createElement("audio");
-    audio.srcObject=e.streams[0];
-    audio.autoplay=true;
-    document.body.appendChild(audio);
-  }
-
-  pcList[id]=pc;
-  return pc;
+  if(offer){const ch=pc.createDataChannel("chat"); channelList[id]=ch; setupChannel(ch);}
+  else{pc.ondatachannel=e=>{const ch=e.channel; channelList[id]=ch; setupChannel(ch);}}
+  pc.onicecandidate=e=>{if(e.candidate) return; document.getElementById("signal").value=JSON.stringify(pc.localDescription);}
+  pc.ontrack=e=>{const audio=document.createElement("audio"); audio.srcObject=e.streams[0]; audio.autoplay=true; document.body.appendChild(audio);}
+  pcList[id]=pc; return pc;
 }
-
 function setupChannel(ch){
   ch.onmessage=e=>{
     const data=JSON.parse(e.data);
     if(data.type==="text") log(`${data.name}: ${data.text}`,"other");
-    else if(data.type==="file"){
-      const blob=new Blob([data.blob],{type:data.blobType});
-      const url=URL.createObjectURL(blob);
-      log(`${data.name}がファイル送信: ${data.filename} (クリックして保存)`);
-      const a=document.createElement("a");
-      a.href=url; a.download=data.filename; a.textContent="💾 ダウンロード";
-      messages.appendChild(a);
-    }
+    else if(data.type==="file"){const blob=new Blob([data.blob],{type:data.blobType}); const url=URL.createObjectURL(blob); log(`${data.name}がファイル送信: ${data.filename}`); const a=document.createElement("a"); a.href=url; a.download=data.filename; a.textContent="💾 ダウンロード"; messages.appendChild(a);}
   };
 }
 
-async function makeOffer(){
-  const id="peer_"+Math.random().toString(36).substr(2,5);
-  const pc=createPeer(id,true);
-  const offer=await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  document.getElementById("signal").value=JSON.stringify(offer);
-  log("オファーをコピーして相手に送ってください");
-}
-
-async function connectToPeer(){
-  const data=document.getElementById("signal").value.trim();
-  if(!data) return;
-  const desc=JSON.parse(data);
-  const id="peer_"+Math.random().toString(36).substr(2,5);
-  const pc=createPeer(id,desc.type==="offer"?false:true);
-  await pc.setRemoteDescription(desc);
-  if(desc.type==="offer"){
-    const answer=await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    document.getElementById("signal").value=JSON.stringify(answer);
-  }
-}
+// P2P 接続
+async function makeOffer(){const id="peer_"+Math.random().toString(36).substr(2,5); const pc=createPeer(id,true); const offer=await pc.createOffer(); await pc.setLocalDescription(offer); document.getElementById("signal").value=JSON.stringify(offer); log("オファーコピーして送信");}
+async function connectToPeer(){const data=document.getElementById("signal").value.trim(); if(!data) return; const desc=JSON.parse(data); const id="peer_"+Math.random().toString(36).substr(2,5); const pc=createPeer(id,desc.type==="offer"?false:true); await pc.setRemoteDescription(desc); if(desc.type==="offer"){const answer=await pc.createAnswer(); await pc.setLocalDescription(answer); document.getElementById("signal").value=JSON.stringify(answer);}}
 
 document.getElementById("copy").onclick=makeOffer;
 document.getElementById("connect").onclick=connectToPeer;
@@ -134,27 +131,16 @@ document.getElementById("send").onclick=()=>{
   document.getElementById("text").value="";
 };
 
-// 音声ON/OFF
+// 音声
 let voiceEnabled=false;
 document.getElementById("voice").onclick=async()=>{
-  if(!voiceEnabled){
-    localStream=await navigator.mediaDevices.getUserMedia({audio:true});
-    voiceEnabled=true;
-    document.getElementById("voice").textContent="音声OFF";
-    log("🎤 音声ON");
-  }else{
-    localStream.getTracks().forEach(track=>track.stop());
-    localStream=null;
-    voiceEnabled=false;
-    document.getElementById("voice").textContent="音声ON";
-    log("🎤 音声OFF");
-  }
+  if(!voiceEnabled){localStream=await navigator.mediaDevices.getUserMedia({audio:true}); voiceEnabled=true; document.getElementById("voice").textContent="音声OFF"; log("🎤 音声ON");}
+  else{localStream.getTracks().forEach(t=>t.stop()); localStream=null; voiceEnabled=false; document.getElementById("voice").textContent="音声ON"; log("🎤 音声OFF");}
 };
 
 // ファイル送信
 document.getElementById("fileInput").onchange=e=>{
-  const file=e.target.files[0];
-  if(!file) return;
+  const file=e.target.files[0]; if(!file) return;
   const reader=new FileReader();
   reader.onload=()=>{
     const data={type:"file",name:localName,filename:file.name,blob:new Uint8Array(reader.result),blobType:file.type};
