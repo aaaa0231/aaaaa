@@ -1,0 +1,104 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>Realtime Chat</title>
+<style>/* 簡易スタイル */</style>
+</head>
+<body>
+<h1>Realtime Chat</h1>
+<label>Room: <input id="room" value="main" /></label>
+<label>Name: <input id="name" value="anon" /></label>
+<button id="join">Join</button>
+<div id="users"></div>
+<div id="chat"></div>
+<input id="msg"><button id="send">Send</button>
+<input id="file" type="file"><button id="sendfile">SendFile</button>
+
+<script>
+const SIGNALING_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + 'YOUR_DDNS_OR_DOMAIN/ws'; // ← ここを書き換えてデプロイ
+let ws;
+let pcMap = {}; // peerId -> RTCPeerConnection
+let dcMap = {}; // peerId -> DataChannel
+const localNameEl = document.getElementById('name');
+
+function connectWS(room){
+  ws = new WebSocket(SIGNALING_URL);
+  ws.onopen = ()=> {
+    ws.send(JSON.stringify({ type:'join', room, payload:{ id: localNameEl.value + '-' + Math.random().toString(36).slice(2,6)} }));
+  };
+  ws.onmessage = async (ev) => {
+    const m = JSON.parse(ev.data);
+    if(m.type === 'joined') {
+      console.log('joined as', m.id);
+    } else if(m.type === 'peer-join') {
+      await createOfferFor(m.id);
+    } else if(m.type === 'offer') {
+      await handleOffer(m.from, m.payload);
+    } else if(m.type === 'answer') {
+      await handleAnswer(m.from, m.payload);
+    } else if(m.type === 'ice') {
+      if(pcMap[m.from]) pcMap[m.from].addIceCandidate(new RTCIceCandidate(m.payload)).catch(console.error);
+    } else if(m.type === 'peer-leave') {
+      // cleanup
+      if(pcMap[m.id]) pcMap[m.id].close(), delete pcMap[m.id], delete dcMap[m.id];
+    }
+  };
+}
+
+async function createOfferFor(peerId){
+  const pc = new RTCPeerConnection({
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      // optional TURN: { urls: 'turn:your-domain:3478', username:'user', credential:'pass' }
+    ]
+  });
+  pcMap[peerId] = pc;
+  const dc = pc.createDataChannel('chat');
+  dc.onopen = ()=> console.log('DC open', peerId);
+  dc.onmessage = (e)=> { appendChat(peerId + ': ' + e.data); };
+  dcMap[peerId] = dc;
+
+  pc.onicecandidate = (e)=> {
+    if(e.candidate) ws.send(JSON.stringify({ type:'ice', room: document.getElementById('room').value, payload: e.candidate, }));
+  };
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  ws.send(JSON.stringify({ type:'offer', room: document.getElementById('room').value, payload: offer }));
+}
+
+async function handleOffer(from, offer){
+  // similar to above: create pc, setRemote, createAnswer, setLocal, send answer
+  const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+  pcMap[from] = pc;
+  pc.ondatachannel = (ev)=> {
+    const ch = ev.channel;
+    ch.onmessage = e=> appendChat(from + ': ' + e.data);
+    dcMap[from] = ch;
+  };
+  pc.onicecandidate = (e)=> {
+    if(e.candidate) ws.send(JSON.stringify({ type:'ice', room: document.getElementById('room').value, payload:e.candidate }));
+  };
+  await pc.setRemoteDescription(new RTCSessionDescription(offer));
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  ws.send(JSON.stringify({ type:'answer', room: document.getElementById('room').value, payload: answer }));
+}
+
+async function handleAnswer(from, answer){
+  const pc = pcMap[from];
+  if(!pc) return console.warn('no pc for', from);
+  await pc.setRemoteDescription(new RTCSessionDescription(answer));
+}
+
+function appendChat(s){ const el = document.getElementById('chat'); el.innerHTML += '<div>'+s+'</div>'; }
+document.getElementById('join').addEventListener('click', ()=> connectWS(document.getElementById('room').value));
+document.getElementById('send').addEventListener('click', ()=> {
+  const t = document.getElementById('msg').value;
+  Object.values(dcMap).forEach(ch=> ch.readyState==='open' && ch.send(t));
+  appendChat('me: ' + t);
+});
+</script>
+</body>
+</html>
