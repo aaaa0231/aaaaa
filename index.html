@@ -2,108 +2,45 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<title>P2Pマルチオンラインチャット</title>
+<title>GitHub P2Pマルチチャット</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-body { font-family: sans-serif; background: #f0f0f0; text-align: center; }
-#chat { max-width: 600px; margin: 20px auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 0 10px #ccc; }
-#messages { height: 300px; overflow-y: auto; border: 1px solid #ccc; padding: 5px; margin-bottom: 10px; text-align: left; }
-input, button, textarea { width: 100%; margin: 5px 0; padding: 10px; }
+body { font-family: sans-serif; background: #f0f0f0; margin: 0; text-align: center; }
+#chat { max-width: 600px; margin: 20px auto; background: #fff; padding: 20px; border-radius: 10px; box-shadow:0 0 10px #ccc;}
+#messages { height: 300px; overflow-y: auto; border: 1px solid #ccc; padding: 5px; text-align:left; margin-bottom:10px;}
+.msg { margin:5px 0; }
+input, button, textarea { width:100%; padding:8px; margin:5px 0;}
 </style>
 </head>
 <body>
 <div id="chat">
-  <h2>🌐 P2Pマルチオンラインチャット（GitHubのみ）</h2>
-  <div id="messages"></div>
-  <input id="name" placeholder="名前を入力">
-  <input id="text" placeholder="メッセージを入力...">
-  <button id="send">送信</button>
-  <hr>
-  <h3>ルーム接続</h3>
-  <textarea id="signal" placeholder="ここに接続データを貼る"></textarea>
-  <button id="copy">接続データをコピー</button>
-  <button id="connect">接続</button>
+<h2>🌐 GitHub P2Pマルチチャット</h2>
+<div id="messages"></div>
+<input id="name" placeholder="名前を入力">
+<input id="text" placeholder="メッセージを入力">
+<button id="send">送信</button>
+<button id="voice">音声ON/OFF</button>
+<hr>
+<h3>ルーム接続</h3>
+<textarea id="signal" placeholder="ここに接続データを貼る"></textarea>
+<button id="copy">接続データをコピー</button>
+<button id="connect">接続</button>
 </div>
 
 <script>
-let peers = {};
-let channels = {};
+const params = new URLSearchParams(window.location.search);
+const room = params.get("room") || "default";
+const messages = document.getElementById("messages");
 let localName = "";
-const servers = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+let pcList = {};
+let channelList = {};
+let localStream = null;
 
 function log(msg, who="system") {
   const div = document.createElement("div");
   div.textContent = msg;
-  document.getElementById("messages").appendChild(div);
-  document.getElementById("messages").scrollTop = 9999;
-}
-
-function createPeer(id, offer = false) {
-  const pc = new RTCPeerConnection(servers);
-
-  pc.ondatachannel = e => {
-    const ch = e.channel;
-    channels[id] = ch;
-    ch.onmessage = ev => {
-      const { name, text } = JSON.parse(ev.data);
-      log(`${name}: ${text}`, "other");
-    };
-  };
-
-  if (offer) {
-    const ch = pc.createDataChannel("chat");
-    channels[id] = ch;
-    ch.onmessage = ev => {
-      const { name, text } = JSON.parse(ev.data);
-      log(`${name}: ${text}`, "other");
-    };
-  }
-
-  pc.onicecandidate = e => {
-    if (e.candidate) return;
-    document.getElementById("signal").value = JSON.stringify(pc.localDescription);
-  };
-
-  peers[id] = pc;
-  return pc;
-}
-
-async function makeOffer() {
-  const id = "peer_" + Math.random().toString(36).substr(2, 5);
-  const pc = createPeer(id, true);
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  document.getElementById("signal").value = JSON.stringify(offer);
-}
-
-async function connectToPeer() {
-  const data = document.getElementById("signal").value.trim();
-  if (!data) return;
-  const desc = JSON.parse(data);
-  const id = "peer_" + Math.random().toString(36).substr(2, 5);
-  const pc = createPeer(id, desc.type === "offer" ? false : true);
-
-  await pc.setRemoteDescription(desc);
-  if (desc.type === "offer") {
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    document.getElementById("signal").value = JSON.stringify(answer);
-  }
-}
-
-document.getElementById("copy").onclick = makeOffer;
-document.getElementById("connect").onclick = connectToPeer;
-
-document.getElementById("send").onclick = () => {
-  const text = document.getElementById("text").value.trim();
-  localName = document.getElementById("name").value.trim() || "匿名";
-  if (!text) return;
-  log(`${localName}: ${text}`, "you");
-  for (const id in channels) {
-    channels[id].send(JSON.stringify({ name: localName, text }));
-  }
-  document.getElementById("text").value = "";
-};
-</script>
-</body>
-</html>
+  div.className = "msg "+who;
+  messages.appendChild(div);
+  messages.scrollTop = 9999;
+  // 履歴保存
+  let history = JSON.parse(localStorage.getIt
