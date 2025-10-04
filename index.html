@@ -2,18 +2,21 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<title>Gist連携 P2Pマルチチャット</title>
+<title>拡張版 Gist連携 P2Pマルチチャット</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 body{font-family:sans-serif;background:#f0f0f0;margin:0;text-align:center;}
 #roomDiv,#chat{max-width:600px;margin:20px auto;background:#fff;padding:20px;border-radius:10px;box-shadow:0 0 10px #ccc;}
 #messages{height:300px;overflow-y:auto;border:1px solid #ccc;padding:5px;text-align:left;margin-bottom:10px;}
+#users{margin:10px 0;font-weight:bold;}
 .msg{margin:5px 0;}
 input,button,textarea{width:100%;padding:8px;margin:5px 0;}
 .roomItem{cursor:pointer;color:blue;text-decoration:underline;margin:3px 0;}
+#progressContainer{margin:5px 0;}
 </style>
 </head>
 <body>
+
 <div id="roomDiv">
 <h2>ルーム作成 / ルーム一覧</h2>
 <input id="roomName" placeholder="ルーム名">
@@ -25,12 +28,16 @@ input,button,textarea{width:100%;padding:8px;margin:5px 0;}
 
 <div id="chat" style="display:none">
 <h2>🌐 P2Pチャット</h2>
+<div id="users">接続中ユーザー:</div>
 <div id="messages"></div>
 <input id="name" placeholder="名前を入力">
 <input id="text" placeholder="メッセージを入力">
 <button id="send">送信</button>
 <button id="voice">音声ON/OFF</button>
 <input type="file" id="fileInput">
+<div id="progressContainer" style="display:none;">
+  <progress id="fileProgress" value="0" max="100"></progress>
+</div>
 <hr>
 <h3>接続</h3>
 <textarea id="signal" placeholder="接続データ"></textarea>
@@ -40,14 +47,21 @@ input,button,textarea{width:100%;padding:8px;margin:5px 0;}
 
 <script>
 // ==== 設定 ====
-const GIST_URL = "https://gist.githubusercontent.com/ユーザー名/GIST_ID/raw/rooms.json"; // 公開Gist URL
-const FETCH_INTERVAL = 5000; // 5秒ごと
+const GIST_ID = prompt("Gist IDを入力");
+const TOKEN = prompt("GitHub Personal Access Tokenを入力");
+const FETCH_INTERVAL = 5000;
 let rooms=[], localName="", pcList={}, channelList={}, localStream=null;
+let connectedUsers = [];
+
+// ==== ユーザー一覧表示 ====
+function addUser(name){if(!connectedUsers.includes(name)){connectedUsers.push(name); renderUsers();}}
+function removeUser(name){connectedUsers = connectedUsers.filter(n=>n!==name); renderUsers();}
+function renderUsers(){document.getElementById("users").textContent = "接続中ユーザー: "+connectedUsers.join(", ");}
 
 // ==== ルーム一覧同期 ====
 async function fetchRooms(){
   try{
-    const res = await fetch(GIST_URL);
+    const res = await fetch(`https://gist.githubusercontent.com/${GIST_ID}/raw/rooms.json`);
     rooms = await res.json();
     renderRoomList();
   }catch(e){console.error("ルーム取得失敗", e);}
@@ -63,23 +77,34 @@ function renderRoomList(){
     roomListDiv.appendChild(div);
   });
 }
-setInterval(fetchRooms,FETCH_INTERVAL);
-fetchRooms();
 
-// ==== ルーム作成（ブラウザからはPUT不可、GitHub Actions推奨） ====
-document.getElementById("createRoom").onclick=()=>{
+// ==== ルーム作成 ====
+async function updateGist(rooms){
+  const res = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+    method:"PATCH",
+    headers:{
+      "Authorization": "token "+TOKEN,
+      "Content-Type":"application/json"
+    },
+    body: JSON.stringify({ files: { "rooms.json": { content: JSON.stringify(rooms,null,2) } } })
+  });
+  if(!res.ok) alert("Gist更新失敗");
+}
+document.getElementById("createRoom").onclick=async()=>{
   const name=document.getElementById("roomName").value.trim();
   const pass=document.getElementById("roomPass").value.trim();
   if(!name) return alert("ルーム名を入力");
   if(rooms.find(r=>r.name===name)) return alert("同名ルームがあります");
-  alert("ルーム作成はGitHub Actionsで更新してください\nブラウザからの自動更新はできません。");
+  rooms.push({name, password:pass});
+  await updateGist(rooms);
+  fetchRooms();
 }
 
 // ==== ルーム参加 ====
 function joinRoom(room){
   if(room.password){
-    const inputPass=prompt("パスワードを入力");
-    if(inputPass!==room.password) return alert("パスワード違います");
+    const inputPass = prompt("パスワード入力");
+    if(inputPass !== room.password) return alert("パスワード違います");
   }
   document.getElementById("roomDiv").style.display="none";
   document.getElementById("chat").style.display="block";
@@ -88,13 +113,7 @@ function joinRoom(room){
 
 // ==== チャット機能 ====
 const messages=document.getElementById("messages");
-function log(msg,who="system"){
-  const div=document.createElement("div");
-  div.textContent=msg;
-  div.className="msg "+who;
-  messages.appendChild(div);
-  messages.scrollTop=9999;
-}
+function log(msg,who="system"){const div=document.createElement("div");div.textContent=msg;div.className="msg "+who;messages.appendChild(div);messages.scrollTop=9999;}
 
 let servers={iceServers:[{urls:"stun:stun.l.google.com:19302"}]};
 
@@ -105,19 +124,37 @@ function createPeer(id,offer=false){
   else{pc.ondatachannel=e=>{const ch=e.channel; channelList[id]=ch; setupChannel(ch);}}
   pc.onicecandidate=e=>{if(e.candidate) return; document.getElementById("signal").value=JSON.stringify(pc.localDescription);}
   pc.ontrack=e=>{const audio=document.createElement("audio"); audio.srcObject=e.streams[0]; audio.autoplay=true; document.body.appendChild(audio);}
+  pc.onconnectionstatechange=e=>{if(pc.connectionState==="disconnected"||pc.connectionState==="failed") removeUser(id);}
   pcList[id]=pc; return pc;
 }
+
 function setupChannel(ch){
   ch.onmessage=e=>{
     const data=JSON.parse(e.data);
     if(data.type==="text") log(`${data.name}: ${data.text}`,"other");
-    else if(data.type==="file"){const blob=new Blob([data.blob],{type:data.blobType}); const url=URL.createObjectURL(blob); log(`${data.name}がファイル送信: ${data.filename}`); const a=document.createElement("a"); a.href=url; a.download=data.filename; a.textContent="💾 ダウンロード"; messages.appendChild(a);}
+    else if(data.type==="fileChunk"){
+      if(!window.fileBuffer) window.fileBuffer={};
+      if(!window.fileBuffer[data.filename]) window.fileBuffer[data.filename]=[];
+      window.fileBuffer[data.filename].push(data.chunk);
+      const receivedSize = window.fileBuffer[data.filename].reduce((acc,c)=>acc+c.length,0);
+      const progress = (receivedSize/data.total)*100;
+      document.getElementById("progressContainer").style.display="block";
+      document.getElementById("fileProgress").value=progress;
+      if(receivedSize>=data.total){
+        const blob=new Blob(window.fileBuffer[data.filename],{type:data.blobType});
+        const url=URL.createObjectURL(blob);
+        const a=document.createElement("a"); a.href=url; a.download=data.filename; a.textContent="💾 ダウンロード"; messages.appendChild(a);
+        log(`${data.name}がファイル受信完了: ${data.filename}`);
+        delete window.fileBuffer[data.filename];
+        document.getElementById("progressContainer").style.display="none";
+      }
+    }
   };
 }
 
 // P2P 接続
-async function makeOffer(){const id="peer_"+Math.random().toString(36).substr(2,5); const pc=createPeer(id,true); const offer=await pc.createOffer(); await pc.setLocalDescription(offer); document.getElementById("signal").value=JSON.stringify(offer); log("オファーコピーして送信");}
-async function connectToPeer(){const data=document.getElementById("signal").value.trim(); if(!data) return; const desc=JSON.parse(data); const id="peer_"+Math.random().toString(36).substr(2,5); const pc=createPeer(id,desc.type==="offer"?false:true); await pc.setRemoteDescription(desc); if(desc.type==="offer"){const answer=await pc.createAnswer(); await pc.setLocalDescription(answer); document.getElementById("signal").value=JSON.stringify(answer);}}
+async function makeOffer(){const id="peer_"+Math.random().toString(36).substr(2,5); const pc=createPeer(id,true); addUser(id); const offer=await pc.createOffer(); await pc.setLocalDescription(offer); document.getElementById("signal").value=JSON.stringify(offer); log("オファーコピーして送信");}
+async function connectToPeer(){const data=document.getElementById("signal").value.trim(); if(!data) return; const desc=JSON.parse(data); const id="peer_"+Math.random().toString(36).substr(2,5); const pc=createPeer(id,desc.type==="offer"?false:true); addUser(id); await pc.setRemoteDescription(desc); if(desc.type==="offer"){const answer=await pc.createAnswer(); await pc.setLocalDescription(answer);}}
 
 document.getElementById("copy").onclick=makeOffer;
 document.getElementById("connect").onclick=connectToPeer;
@@ -141,14 +178,25 @@ document.getElementById("voice").onclick=async()=>{
 // ファイル送信
 document.getElementById("fileInput").onchange=e=>{
   const file=e.target.files[0]; if(!file) return;
+  const chunkSize=16*1024;
+  let offset=0;
   const reader=new FileReader();
+  document.getElementById("progressContainer").style.display="block";
   reader.onload=()=>{
-    const data={type:"file",name:localName,filename:file.name,blob:new Uint8Array(reader.result),blobType:file.type};
-    for(const id in channelList) channelList[id].send(JSON.stringify(data));
-    log(`${localName}がファイル送信: ${file.name}`,"you");
-  };
-  reader.readAsArrayBuffer(file);
+    const chunk=new Uint8Array(reader.result);
+    for(const id in channelList) channelList[id].send(JSON.stringify({type:"fileChunk",name:localName,chunk,filename:file.name,blobType:file.type,total:file.size}));
+    offset+=chunkSize;
+    document.getElementById("fileProgress").value = (offset/file.size)*100;
+    if(offset<file.size) readSlice();
+    else setTimeout(()=>{document.getElementById("progressContainer").style.display="none";},500);
+  }
+  function readSlice(){ const slice=file.slice(offset,offset+chunkSize); reader.readAsArrayBuffer(slice); }
+  readSlice();
 };
+
+// 初回 fetch
+fetchRooms();
+setInterval(fetchRooms,FETCH_INTERVAL);
 </script>
 </body>
 </html>
