@@ -2,89 +2,77 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<title>GitHub P2Pマルチチャット</title>
+<title>完全P2Pマルチチャット</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-body { font-family: sans-serif; background: #f0f0f0; margin: 0; text-align: center; }
-#chat { max-width: 600px; margin: 20px auto; background: #fff; padding: 20px; border-radius: 10px; box-shadow:0 0 10px #ccc;}
-#messages { height: 300px; overflow-y: auto; border: 1px solid #ccc; padding: 5px; text-align:left; margin-bottom:10px;}
-.msg { margin:5px 0; }
-input, button, textarea { width:100%; padding:8px; margin:5px 0;}
+body{font-family:sans-serif;background:#f0f0f0;margin:0;text-align:center}
+#chat{max-width:600px;margin:20px auto;background:#fff;padding:20px;border-radius:10px;box-shadow:0 0 10px #ccc}
+#messages{height:300px;overflow-y:auto;border:1px solid #ccc;padding:5px;text-align:left;margin-bottom:10px}
+.msg{margin:5px 0}
+input,button,textarea{width:100%;padding:8px;margin:5px 0}
 </style>
 </head>
 <body>
 <div id="chat">
-<h2>🌐 GitHub P2Pマルチチャット</h2>
+<h2>🌐 GitHub P2P完全マルチチャット</h2>
 <div id="messages"></div>
 <input id="name" placeholder="名前を入力">
 <input id="text" placeholder="メッセージを入力">
 <button id="send">送信</button>
 <button id="voice">音声ON/OFF</button>
+<input type="file" id="fileInput">
 <hr>
 <h3>ルーム接続</h3>
-<textarea id="signal" placeholder="ここに接続データを貼る"></textarea>
+<textarea id="signal" placeholder="接続データ自動同期"></textarea>
 <button id="copy">接続データをコピー</button>
 <button id="connect">接続</button>
 </div>
 
 <script>
-const params = new URLSearchParams(window.location.search);
-const room = params.get("room") || "default";
-const messages = document.getElementById("messages");
-let localName = "";
-let pcList = {};
-let channelList = {};
-let localStream = null;
+const params=new URLSearchParams(window.location.search);
+const room=params.get("room")||"default";
+const messages=document.getElementById("messages");
+let localName="", pcList={}, channelList={}, localStream=null;
 
-function log(msg, who="system") {
-  const div = document.createElement("div");
-  div.textContent = msg;
-  div.className = "msg "+who;
+function log(msg,who="system"){
+  const div=document.createElement("div");
+  div.textContent=msg;
+  div.className="msg "+who;
   messages.appendChild(div);
-  messages.scrollTop = 9999;
-  // 履歴保存
-  let history = JSON.parse(localStorage.getItem("chat_"+room)||"[]");
-  if(who==="you"||who==="other") history.push(msg);
-  localStorage.setItem("chat_"+room, JSON.stringify(history));
+  messages.scrollTop=9999;
+  if(who==="you"||who==="other"){
+    let history=JSON.parse(localStorage.getItem("chat_"+room)||"[]");
+    history.push(msg);
+    localStorage.setItem("chat_"+room,JSON.stringify(history));
+  }
 }
-
-// 履歴表示
-let history = JSON.parse(localStorage.getItem("chat_"+room)||"[]");
+let history=JSON.parse(localStorage.getItem("chat_"+room)||"[]");
 history.forEach(msg=>log(msg,"history"));
 
-const servers = {iceServers:[{urls:"stun:stun.l.google.com:19302"}]};
+const servers={iceServers:[{urls:"stun:stun.l.google.com:19302"}]};
 
-function createPeer(id, offer=false){
-  const pc = new RTCPeerConnection(servers);
+function createPeer(id,offer=false){
+  const pc=new RTCPeerConnection(servers);
 
-  // 音声トラック追加
-  if(localStream) pc.addTrack(localStream.getTracks()[0], localStream);
+  if(localStream) pc.addTrack(localStream.getTracks()[0],localStream);
 
-  // データチャネル
   if(offer){
-    const ch = pc.createDataChannel("chat");
+    const ch=pc.createDataChannel("chat");
     channelList[id]=ch;
-    ch.onmessage=e=>{
-      const {name,text}=JSON.parse(e.data);
-      log(`${name}: ${text}`,"other");
-    };
+    setupChannel(ch);
   }else{
     pc.ondatachannel=e=>{
       const ch=e.channel;
       channelList[id]=ch;
-      ch.onmessage=e=>{
-        const {name,text}=JSON.parse(e.data);
-        log(`${name}: ${text}`,"other");
-      };
+      setupChannel(ch);
     }
   }
 
   pc.onicecandidate=e=>{
     if(e.candidate) return;
-    document.getElementById("signal").value = JSON.stringify(pc.localDescription);
+    document.getElementById("signal").value=JSON.stringify(pc.localDescription);
   }
 
-  // 音声受信
   pc.ontrack=e=>{
     const audio=document.createElement("audio");
     audio.srcObject=e.streams[0];
@@ -94,6 +82,21 @@ function createPeer(id, offer=false){
 
   pcList[id]=pc;
   return pc;
+}
+
+function setupChannel(ch){
+  ch.onmessage=e=>{
+    const data=JSON.parse(e.data);
+    if(data.type==="text") log(`${data.name}: ${data.text}`,"other");
+    else if(data.type==="file"){
+      const blob=new Blob([data.blob],{type:data.blobType});
+      const url=URL.createObjectURL(blob);
+      log(`${data.name}がファイル送信: ${data.filename} (クリックして保存)`);
+      const a=document.createElement("a");
+      a.href=url; a.download=data.filename; a.textContent="💾 ダウンロード";
+      messages.appendChild(a);
+    }
+  };
 }
 
 async function makeOffer(){
@@ -127,7 +130,7 @@ document.getElementById("send").onclick=()=>{
   localName=document.getElementById("name").value.trim()||"匿名";
   if(!text) return;
   log(`${localName}: ${text}`,"you");
-  for(const id in channelList) channelList[id].send(JSON.stringify({name:localName,text}));
+  for(const id in channelList) channelList[id].send(JSON.stringify({type:"text",name:localName,text}));
   document.getElementById("text").value="";
 };
 
@@ -146,6 +149,19 @@ document.getElementById("voice").onclick=async()=>{
     document.getElementById("voice").textContent="音声ON";
     log("🎤 音声OFF");
   }
+};
+
+// ファイル送信
+document.getElementById("fileInput").onchange=e=>{
+  const file=e.target.files[0];
+  if(!file) return;
+  const reader=new FileReader();
+  reader.onload=()=>{
+    const data={type:"file",name:localName,filename:file.name,blob:new Uint8Array(reader.result),blobType:file.type};
+    for(const id in channelList) channelList[id].send(JSON.stringify(data));
+    log(`${localName}がファイル送信: ${file.name}`,"you");
+  };
+  reader.readAsArrayBuffer(file);
 };
 </script>
 </body>
