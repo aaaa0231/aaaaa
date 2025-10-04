@@ -1,104 +1,109 @@
-<!doctype html>
-<html>
+<!DOCTYPE html>
+<html lang="ja">
 <head>
-<meta charset="utf-8"/>
-<title>Realtime Chat</title>
-<style>/* 簡易スタイル */</style>
+<meta charset="UTF-8">
+<title>P2Pマルチオンラインチャット</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body { font-family: sans-serif; background: #f0f0f0; text-align: center; }
+#chat { max-width: 600px; margin: 20px auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 0 10px #ccc; }
+#messages { height: 300px; overflow-y: auto; border: 1px solid #ccc; padding: 5px; margin-bottom: 10px; text-align: left; }
+input, button, textarea { width: 100%; margin: 5px 0; padding: 10px; }
+</style>
 </head>
 <body>
-<h1>Realtime Chat</h1>
-<label>Room: <input id="room" value="main" /></label>
-<label>Name: <input id="name" value="anon" /></label>
-<button id="join">Join</button>
-<div id="users"></div>
-<div id="chat"></div>
-<input id="msg"><button id="send">Send</button>
-<input id="file" type="file"><button id="sendfile">SendFile</button>
+<div id="chat">
+  <h2>🌐 P2Pマルチオンラインチャット（GitHubのみ）</h2>
+  <div id="messages"></div>
+  <input id="name" placeholder="名前を入力">
+  <input id="text" placeholder="メッセージを入力...">
+  <button id="send">送信</button>
+  <hr>
+  <h3>ルーム接続</h3>
+  <textarea id="signal" placeholder="ここに接続データを貼る"></textarea>
+  <button id="copy">接続データをコピー</button>
+  <button id="connect">接続</button>
+</div>
 
 <script>
-const SIGNALING_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + 'YOUR_DDNS_OR_DOMAIN/ws'; // ← ここを書き換えてデプロイ
-let ws;
-let pcMap = {}; // peerId -> RTCPeerConnection
-let dcMap = {}; // peerId -> DataChannel
-const localNameEl = document.getElementById('name');
+let peers = {};
+let channels = {};
+let localName = "";
+const servers = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
-function connectWS(room){
-  ws = new WebSocket(SIGNALING_URL);
-  ws.onopen = ()=> {
-    ws.send(JSON.stringify({ type:'join', room, payload:{ id: localNameEl.value + '-' + Math.random().toString(36).slice(2,6)} }));
-  };
-  ws.onmessage = async (ev) => {
-    const m = JSON.parse(ev.data);
-    if(m.type === 'joined') {
-      console.log('joined as', m.id);
-    } else if(m.type === 'peer-join') {
-      await createOfferFor(m.id);
-    } else if(m.type === 'offer') {
-      await handleOffer(m.from, m.payload);
-    } else if(m.type === 'answer') {
-      await handleAnswer(m.from, m.payload);
-    } else if(m.type === 'ice') {
-      if(pcMap[m.from]) pcMap[m.from].addIceCandidate(new RTCIceCandidate(m.payload)).catch(console.error);
-    } else if(m.type === 'peer-leave') {
-      // cleanup
-      if(pcMap[m.id]) pcMap[m.id].close(), delete pcMap[m.id], delete dcMap[m.id];
-    }
-  };
+function log(msg, who="system") {
+  const div = document.createElement("div");
+  div.textContent = msg;
+  document.getElementById("messages").appendChild(div);
+  document.getElementById("messages").scrollTop = 9999;
 }
 
-async function createOfferFor(peerId){
-  const pc = new RTCPeerConnection({
-    iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      // optional TURN: { urls: 'turn:your-domain:3478', username:'user', credential:'pass' }
-    ]
-  });
-  pcMap[peerId] = pc;
-  const dc = pc.createDataChannel('chat');
-  dc.onopen = ()=> console.log('DC open', peerId);
-  dc.onmessage = (e)=> { appendChat(peerId + ': ' + e.data); };
-  dcMap[peerId] = dc;
+function createPeer(id, offer = false) {
+  const pc = new RTCPeerConnection(servers);
 
-  pc.onicecandidate = (e)=> {
-    if(e.candidate) ws.send(JSON.stringify({ type:'ice', room: document.getElementById('room').value, payload: e.candidate, }));
+  pc.ondatachannel = e => {
+    const ch = e.channel;
+    channels[id] = ch;
+    ch.onmessage = ev => {
+      const { name, text } = JSON.parse(ev.data);
+      log(`${name}: ${text}`, "other");
+    };
   };
 
+  if (offer) {
+    const ch = pc.createDataChannel("chat");
+    channels[id] = ch;
+    ch.onmessage = ev => {
+      const { name, text } = JSON.parse(ev.data);
+      log(`${name}: ${text}`, "other");
+    };
+  }
+
+  pc.onicecandidate = e => {
+    if (e.candidate) return;
+    document.getElementById("signal").value = JSON.stringify(pc.localDescription);
+  };
+
+  peers[id] = pc;
+  return pc;
+}
+
+async function makeOffer() {
+  const id = "peer_" + Math.random().toString(36).substr(2, 5);
+  const pc = createPeer(id, true);
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
-  ws.send(JSON.stringify({ type:'offer', room: document.getElementById('room').value, payload: offer }));
+  document.getElementById("signal").value = JSON.stringify(offer);
 }
 
-async function handleOffer(from, offer){
-  // similar to above: create pc, setRemote, createAnswer, setLocal, send answer
-  const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
-  pcMap[from] = pc;
-  pc.ondatachannel = (ev)=> {
-    const ch = ev.channel;
-    ch.onmessage = e=> appendChat(from + ': ' + e.data);
-    dcMap[from] = ch;
-  };
-  pc.onicecandidate = (e)=> {
-    if(e.candidate) ws.send(JSON.stringify({ type:'ice', room: document.getElementById('room').value, payload:e.candidate }));
-  };
-  await pc.setRemoteDescription(new RTCSessionDescription(offer));
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-  ws.send(JSON.stringify({ type:'answer', room: document.getElementById('room').value, payload: answer }));
+async function connectToPeer() {
+  const data = document.getElementById("signal").value.trim();
+  if (!data) return;
+  const desc = JSON.parse(data);
+  const id = "peer_" + Math.random().toString(36).substr(2, 5);
+  const pc = createPeer(id, desc.type === "offer" ? false : true);
+
+  await pc.setRemoteDescription(desc);
+  if (desc.type === "offer") {
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    document.getElementById("signal").value = JSON.stringify(answer);
+  }
 }
 
-async function handleAnswer(from, answer){
-  const pc = pcMap[from];
-  if(!pc) return console.warn('no pc for', from);
-  await pc.setRemoteDescription(new RTCSessionDescription(answer));
-}
+document.getElementById("copy").onclick = makeOffer;
+document.getElementById("connect").onclick = connectToPeer;
 
-function appendChat(s){ const el = document.getElementById('chat'); el.innerHTML += '<div>'+s+'</div>'; }
-document.getElementById('join').addEventListener('click', ()=> connectWS(document.getElementById('room').value));
-document.getElementById('send').addEventListener('click', ()=> {
-  const t = document.getElementById('msg').value;
-  Object.values(dcMap).forEach(ch=> ch.readyState==='open' && ch.send(t));
-  appendChat('me: ' + t);
-});
+document.getElementById("send").onclick = () => {
+  const text = document.getElementById("text").value.trim();
+  localName = document.getElementById("name").value.trim() || "匿名";
+  if (!text) return;
+  log(`${localName}: ${text}`, "you");
+  for (const id in channels) {
+    channels[id].send(JSON.stringify({ name: localName, text }));
+  }
+  document.getElementById("text").value = "";
+};
 </script>
 </body>
 </html>
