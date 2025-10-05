@@ -1,116 +1,130 @@
-<!doctype html>
-<html>
+<!DOCTYPE html>
+<html lang="ja">
 <head>
-  <meta charset="utf-8">
-  <title>Simple Multi Chat</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <style>
-    body{font-family: Arial, sans-serif; background:#f7f7f7; padding:10px;}
-    #app{max-width:800px;margin:0 auto;background:white;padding:15px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.08)}
-    #messages{height:400px;overflow:auto;border:1px solid #eee;padding:8px;margin-bottom:10px;background:#fff;}
-    .msg{margin:6px 0}
-    .sys{color:#666;font-style:italic}
-    .me{color:green}
-    .peer{color:blue}
-    #controls input, #controls button {padding:8px;margin:4px 0;width:100%;}
-    .row{display:flex;gap:8px}
-    .row input{flex:1}
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>P2Pチャット（GitHub Pages対応）</title>
+<style>
+body{font-family:"Segoe UI",sans-serif;background:#eef1f5;margin:0;padding:20px;}
+#app{max-width:600px;margin:auto;background:#fff;padding:20px;border-radius:12px;box-shadow:0 0 15px rgba(0,0,0,0.1);}
+#log{height:300px;overflow-y:auto;border:1px solid #ccc;padding:10px;margin-bottom:10px;border-radius:8px;background:#fafafa;}
+.msg{margin:6px 0;padding:8px 12px;border-radius:8px;max-width:80%;word-wrap:break-word;}
+.me{background:#d4f9d2;margin-left:auto;}
+.other{background:#f0f0f0;}
+.system{text-align:center;color:#666;font-size:0.9em;}
+input,textarea,button{width:100%;padding:10px;margin:5px 0;box-sizing:border-box;border-radius:6px;border:1px solid #ccc;font-size:1em;}
+button{background:#007bff;color:#fff;border:none;cursor:pointer;transition:0.3s;}
+button:hover{background:#0056b3;}
+.flex{display:flex;gap:5px;}
+</style>
 </head>
 <body>
 <div id="app">
-  <h2>Simple Multi Chat</h2>
+  <h2>🌐 サーバーなしP2Pチャット</h2>
+  <div id="log"></div>
 
-  <div id="lobby">
-    <input id="roomInput" placeholder="ルーム名 (例: lobby)" />
-    <input id="nameInput" placeholder="あなたの名前" />
-    <button id="joinBtn">参加 / ルーム作成</button>
+  <div class="flex">
+    <input id="name" placeholder="あなたの名前">
+  </div>
+  <div class="flex">
+    <input id="msg" placeholder="メッセージを入力">
+    <button id="send">送信</button>
   </div>
 
-  <div id="chatArea" style="display:none">
-    <div id="messages"></div>
+  <h3>接続操作</h3>
+  <button id="makeOffer">① オファーを作成（最初の人）</button>
+  <button id="makeAnswer">② アンサーを作成（参加する人）</button>
 
-    <div id="controls">
-      <div class="row">
-        <input id="msgInput" placeholder="メッセージを入力" />
-        <button id="sendBtn">送信</button>
-      </div>
-      <button id="leaveBtn">退出</button>
-    </div>
+  <textarea id="signal" placeholder="ここにオファー／アンサーを貼り付け or コピー"></textarea>
+  <div class="flex">
+    <button id="copy">コピー</button>
+    <button id="connect">接続</button>
   </div>
 </div>
 
 <script>
-(function(){
-  let ws;
-  const messagesEl = document.getElementById('messages');
-  const roomInput = document.getElementById('roomInput');
-  const nameInput = document.getElementById('nameInput');
-  const joinBtn = document.getElementById('joinBtn');
-  const chatArea = document.getElementById('chatArea');
-  const lobby = document.getElementById('lobby');
-  const msgInput = document.getElementById('msgInput');
-  const sendBtn = document.getElementById('sendBtn');
-  const leaveBtn = document.getElementById('leaveBtn');
+let pc, channel;
+const servers = {iceServers:[{urls:"stun:stun.l.google.com:19302"}]};
+const logDiv = document.getElementById("log");
 
-  function append(text, cls='msg') {
-    const d = document.createElement('div');
-    d.className = cls;
-    d.textContent = text;
-    messagesEl.appendChild(d);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-  }
+function addLog(text, cls="system"){
+  const div=document.createElement("div");
+  div.textContent=text;
+  div.className="msg "+cls;
+  logDiv.appendChild(div);
+  logDiv.scrollTop=logDiv.scrollHeight;
+}
 
-  joinBtn.onclick = () => {
-    const room = roomInput.value.trim() || 'default';
-    const name = nameInput.value.trim() || '匿名';
-    // connect to WS server (adjust host/port as needed)
-    const base = location.hostname === 'localhost' ? `ws://${location.hostname}:3000/ws` : `wss://${location.hostname}/ws`;
-    // If server hosted elsewhere, change URL like 'wss://your-domain/ws'
-    const wsUrl = (window.CHAT_WS_URL && window.CHAT_WS_URL.length) ? window.CHAT_WS_URL : base;
-    ws = new WebSocket(wsUrl);
+// 送信処理
+document.getElementById("send").onclick=()=>{
+  if(!channel || channel.readyState!=="open") return;
+  const name=document.getElementById("name").value.trim()||"匿名";
+  const text=document.getElementById("msg").value.trim();
+  if(!text) return;
+  const data={name,text};
+  channel.send(JSON.stringify(data));
+  addLog(`${name}: ${text}`,"me");
+  document.getElementById("msg").value="";
+};
 
-    ws.onopen = () => {
-      ws.send(JSON.stringify({ type:'join', room, name }));
-      lobby.style.display = 'none';
-      chatArea.style.display = 'block';
-      append(`あなたは ${name} として ${room} に参加しました`, 'sys');
-    };
-    ws.onmessage = (ev) => {
-      let m;
-      try { m = JSON.parse(ev.data); } catch(e){ return; }
-      if (m.type === 'system') append(m.text, 'sys');
-      else if (m.type === 'chat') {
-        const who = (m.name === name) ? 'me' : 'peer';
-        append(`${m.name}: ${m.text}`, who);
-      }
-    };
-    ws.onclose = () => {
-      append('接続が切れました', 'sys');
-      lobby.style.display = '';
-      chatArea.style.display = 'none';
-    };
-    ws.onerror = (e) => { console.error(e); append('通信エラー', 'sys'); };
-  };
-
-  sendBtn.onclick = () => {
-    const text = msgInput.value.trim();
-    if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
-    const room = roomInput.value.trim() || 'default';
-    const name = nameInput.value.trim() || '匿名';
-    ws.send(JSON.stringify({ type:'chat', room, name, text }));
-    msgInput.value = '';
-  };
-  msgInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendBtn.click(); });
-
-  leaveBtn.onclick = () => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type:'leave' }));
-      ws.close();
+// オファー作成
+document.getElementById("makeOffer").onclick=async()=>{
+  pc=new RTCPeerConnection(servers);
+  channel=pc.createDataChannel("chat");
+  setupChannel(channel);
+  pc.onicecandidate=e=>{
+    if(!e.candidate){
+      document.getElementById("signal").value=JSON.stringify(pc.localDescription);
     }
   };
+  const offer=await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  addLog("📤 オファーを生成しました。相手に送ってください。");
+};
 
-})();
+// アンサー作成
+document.getElementById("makeAnswer").onclick=()=>{
+  pc=new RTCPeerConnection(servers);
+  pc.ondatachannel=e=>{
+    channel=e.channel;
+    setupChannel(channel);
+  };
+  pc.onicecandidate=e=>{
+    if(!e.candidate){
+      document.getElementById("signal").value=JSON.stringify(pc.localDescription);
+    }
+  };
+  addLog("📥 オファーを貼り付けて「接続」を押してください。");
+};
+
+// 接続
+document.getElementById("connect").onclick=async()=>{
+  const txt=document.getElementById("signal").value.trim();
+  if(!txt) return alert("接続データを入力してください。");
+  const desc=JSON.parse(txt);
+  await pc.setRemoteDescription(desc);
+  if(desc.type==="offer"){
+    const answer=await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+  }
+  addLog("⏳ 接続中...");
+};
+
+// コピー
+document.getElementById("copy").onclick=()=>{
+  navigator.clipboard.writeText(document.getElementById("signal").value);
+  alert("コピーしました！");
+};
+
+// チャンネル設定
+function setupChannel(ch){
+  channel=ch;
+  channel.onopen=()=>addLog("✅ 接続成功！チャット開始できます。");
+  channel.onmessage=e=>{
+    const data=JSON.parse(e.data);
+    addLog(`${data.name}: ${data.text}`,"other");
+  };
+}
 </script>
 </body>
 </html>
