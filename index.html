@@ -3,48 +3,65 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>P2P Chat</title>
+<title>P2P Chat with History</title>
 <style>
 body{font-family:sans-serif;background:#0f1221;color:#e8ebff;margin:0;padding:0;}
 .container{max-width:600px;margin:20px auto;padding:10px;}
-textarea,input,button{width:100%;margin-top:5px;padding:8px;border-radius:6px;border:none;background:#1c2040;color:#e8ebff;}
+textarea,input,button,select{width:100%;margin-top:5px;padding:8px;border-radius:6px;border:none;background:#1c2040;color:#e8ebff;}
 button{cursor:pointer;background:#6c8cff;color:#fff;}
-#messages{border:1px solid #333;height:300px;overflow-y:auto;padding:5px;margin-top:10px;}
+#messages{border:1px solid #333;height:200px;overflow-y:auto;padding:5px;margin-top:10px;}
 .msg{margin:5px 0;padding:6px;border-radius:6px;background:#1c2040;}
 .msg.self{background:#2a356b;text-align:right;}
+button.small{width:auto;padding:4px 8px;margin-top:2px;}
+#participants{border:1px solid #333;height:80px;overflow-y:auto;padding:5px;margin-top:5px;}
 </style>
 </head>
 <body>
 <div class="container">
-  <h2>P2P Chat (コピペ方式)</h2>
+<h2>P2P Chat (履歴共有)</h2>
 
-  <label>自分の名前</label>
-  <input type="text" id="username" placeholder="名前">
+<label>名前</label>
+<input type="text" id="username" placeholder="名前">
 
-  <button id="createOffer">オファー作成</button>
-  <textarea id="offerOutput" placeholder="ここにオファーが生成されます" rows="4"></textarea>
+<label>ルーム一覧</label>
+<select id="roomList"></select>
+<input type="text" id="newRoom" placeholder="新しいルーム名">
+<button id="createRoom" class="small">ルーム作成</button>
 
-  <label>相手のオファー/アンサーを貼り付け</label>
-  <textarea id="inputSDP" placeholder="ここにオファーまたはアンサーを貼り付け"></textarea>
-  <button id="setRemote">貼り付けを送信</button>
+<div style="margin-top:10px;">
+<button id="createOffer" class="small">オファー生成</button>
+<button id="copyOffer" class="small">コピー</button>
+<button id="pasteAnswer" class="small">相手のアンサー貼り付け</button>
+</div>
+<textarea id="offerOutput" rows="4" placeholder="ここにオファー/アンサーが表示"></textarea>
 
-  <div id="messages"></div>
+<h4>参加者一覧</h4>
+<div id="participants"></div>
 
-  <input type="text" id="messageInput" placeholder="メッセージ">
-  <button id="sendBtn">送信</button>
+<div id="messages"></div>
+<input type="text" id="messageInput" placeholder="メッセージ">
+<button id="sendBtn">送信</button>
 </div>
 
 <script>
-let localConnection = new RTCPeerConnection();
-let dataChannel = null;
 let username = '';
-const messagesEl = document.getElementById('messages');
-const offerOutput = document.getElementById('offerOutput');
-const inputSDP = document.getElementById('inputSDP');
-
 document.getElementById('username').addEventListener('input', e=>{
   username = e.target.value.trim() || '匿名';
+  const room = roomListEl.value;
+  if(room && rooms[room]){
+    rooms[room].forEach(p=>{
+      if(p.dc.readyState==='open') p.dc.send(JSON.stringify({type:'name',name:username}));
+    });
+    updateParticipants(room);
+  }
 });
+
+const messagesEl = document.getElementById('messages');
+const offerOutput = document.getElementById('offerOutput');
+const participantsEl = document.getElementById('participants');
+const roomListEl = document.getElementById('roomList');
+const rooms = {};
+const history = {}; // ルームごとの履歴
 
 function addMessage(msg,isSelf=false){
   const div = document.createElement('div');
@@ -54,48 +71,158 @@ function addMessage(msg,isSelf=false){
   messagesEl.scrollTop=messagesEl.scrollHeight;
 }
 
-// オファー作成
-document.getElementById('createOffer').onclick=async ()=>{
-  dataChannel = localConnection.createDataChannel('chat');
-  dataChannel.onmessage=e=>addMessage(e.data,false);
+function updateParticipants(room){
+  const names = rooms[room]?.map(r=>r.name).filter(n=>n)?.sort()||[];
+  participantsEl.textContent = names.join('\n');
+}
 
-  localConnection.onicecandidate = e=>{
+function broadcast(room, peer, data){
+  peer.dc.send(JSON.stringify(data));
+}
+
+function broadcastLeave(room, peer){
+  const leaveMsg = {type:'leave',name:username};
+  peer.dc.send(JSON.stringify(leaveMsg));
+}
+
+function broadcastHistory(room, peer){
+  const hist = history[room]||[];
+  peer.dc.send(JSON.stringify({type:'history',messages:hist}));
+}
+
+function createPeer(room){
+  if(!rooms[room]) rooms[room] = [];
+  if(!history[room]) history[room] = [];
+  const pc = new RTCPeerConnection();
+  const dc = pc.createDataChannel('chat');
+  const peer = {pc,dc,name:username};
+  rooms[room].push(peer);
+  updateParticipants(room);
+
+  dc.onopen = ()=>broadcastNameAndHistory(room,peer);
+  dc.onmessage = e=>{
+    try{
+      const data = JSON.parse(e.data);
+      if(data.type==='name'){ peer.name=data.name||'相手'; updateParticipants(room); return; }
+      if(data.type==='leave'){ rooms[room] = rooms[room].filter(p=>p!==peer); updateParticipants(room); return; }
+      if(data.type==='history'){ data.messages.forEach(m=>addMessage(m,false)); history[room]=data.messages; return; }
+    }catch{}
+    addMessage(e.data,false);
+    history[room].push(e.data);
+  };
+  pc.onicecandidate = e=>{
     if(e.candidate===null){
-      offerOutput.value = JSON.stringify(localConnection.localDescription);
+      offerOutput.value = JSON.stringify(pc.localDescription);
     }
-  }
+  };
+  return pc;
+}
 
-  const offer = await localConnection.createOffer();
-  await localConnection.setLocalDescription(offer);
+function receivePeer(room,sdp){
+  if(!rooms[room]) rooms[room] = [];
+  if(!history[room]) history[room] = [];
+  const pc = new RTCPeerConnection();
+  pc.ondatachannel = e=>{
+    const dc = e.channel;
+    const peer = {pc,dc,name:'相手'};
+    rooms[room].push(peer);
+    updateParticipants(room);
+    dc.onopen = ()=>broadcastNameAndHistory(room,peer);
+    dc.onmessage = ev=>{
+      try{
+        const data = JSON.parse(ev.data);
+        if(data.type==='name'){ peer.name=data.name||'相手'; updateParticipants(room); return; }
+        if(data.type==='leave'){ rooms[room] = rooms[room].filter(p=>p!==peer); updateParticipants(room); return; }
+        if(data.type==='history'){ data.messages.forEach(m=>addMessage(m,false)); history[room]=data.messages; return; }
+      }catch{}
+      addMessage(ev.data,false);
+      history[room].push(ev.data);
+    };
+  };
+  return pc;
+}
+
+function broadcastNameAndHistory(room, peer){
+  broadcast(room,peer,{type:'name',name:username});
+  broadcastHistory(room,peer);
+}
+
+// ルーム作成
+document.getElementById('createRoom').onclick = ()=>{
+  const r = document.getElementById('newRoom').value.trim();
+  if(!r) return alert('ルーム名を入力してください');
+  if(!Array.from(roomListEl.options).some(o=>o.value===r)){
+    const option = document.createElement('option');
+    option.value = r;
+    option.textContent = r;
+    roomListEl.appendChild(option);
+    roomListEl.value = r;
+  }
+  document.getElementById('newRoom').value='';
+  updateParticipants(roomListEl.value);
 };
 
-// リモートSDP設定
-document.getElementById('setRemote').onclick=async ()=>{
-  const sdp = JSON.parse(inputSDP.value.trim());
-  if(sdp.type==='offer'){
-    localConnection.ondatachannel = e=>{
-      dataChannel = e.channel;
-      dataChannel.onmessage = e=>addMessage(e.data,false);
-    };
-    await localConnection.setRemoteDescription(sdp);
-    const answer = await localConnection.createAnswer();
-    await localConnection.setLocalDescription(answer);
-    offerOutput.value = JSON.stringify(localConnection.localDescription);
-  } else if(sdp.type==='answer'){
-    await localConnection.setRemoteDescription(sdp);
+// オファー生成
+document.getElementById('createOffer').onclick = async ()=>{
+  const room = roomListEl.value;
+  if(!room) return alert('ルームを選択してください');
+  const pc = createPeer(room);
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+};
+
+// コピー
+document.getElementById('copyOffer').onclick = ()=>{
+  offerOutput.select();
+  document.execCommand('copy');
+  alert('コピーしました');
+};
+
+// アンサー貼り付け
+document.getElementById('pasteAnswer').onclick = async ()=>{
+  const room = roomListEl.value;
+  if(!room) return alert('ルームを選択してください');
+  const sdpStr = prompt('相手のSDPを貼り付けてください');
+  if(!sdpStr) return;
+  const sdp = JSON.parse(sdpStr.trim());
+  if(sdp.type==='answer'){
+    (rooms[room]||[]).forEach(({pc})=>{
+      if(pc.signalingState!=='stable') pc.setRemoteDescription(sdp);
+    });
+  } else if(sdp.type==='offer'){
+    const pc = receivePeer(room,sdp);
+    await pc.setRemoteDescription(sdp);
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    offerOutput.value = JSON.stringify(pc.localDescription);
   }
-  inputSDP.value='';
+  updateParticipants(room);
 };
 
 // メッセージ送信
-document.getElementById('sendBtn').onclick=()=>{
+document.getElementById('sendBtn').onclick = ()=>{
+  const room = roomListEl.value;
+  if(!room) return alert('ルームを選択してください');
   const msg = document.getElementById('messageInput').value.trim();
-  if(msg && dataChannel && dataChannel.readyState==='open'){
-    dataChannel.send(username+': '+msg);
-    addMessage(username+': '+msg,true);
-    document.getElementById('messageInput').value='';
-  }
+  if(!msg) return;
+  const sendText = username+': '+msg;
+  (rooms[room]||[]).forEach(({dc})=>{
+    if(dc.readyState==='open') dc.send(sendText);
+  });
+  addMessage(sendText,true);
+  history[room].push(sendText);
+  document.getElementById('messageInput').value='';
 };
+
+// ウィンドウ終了時に退出通知
+window.addEventListener('beforeunload', ()=>{
+  const room = roomListEl.value;
+  if(room && rooms[room]){
+    rooms[room].forEach(p=>{
+      if(p.dc.readyState==='open') broadcastLeave(room,p);
+    });
+  }
+});
 </script>
 </body>
 </html>
