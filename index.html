@@ -1,130 +1,100 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>P2Pチャット（GitHub Pages対応）</title>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>min2 Chat</title>
 <style>
-body{font-family:"Segoe UI",sans-serif;background:#eef1f5;margin:0;padding:20px;}
-#app{max-width:600px;margin:auto;background:#fff;padding:20px;border-radius:12px;box-shadow:0 0 15px rgba(0,0,0,0.1);}
-#log{height:300px;overflow-y:auto;border:1px solid #ccc;padding:10px;margin-bottom:10px;border-radius:8px;background:#fafafa;}
-.msg{margin:6px 0;padding:8px 12px;border-radius:8px;max-width:80%;word-wrap:break-word;}
-.me{background:#d4f9d2;margin-left:auto;}
-.other{background:#f0f0f0;}
-.system{text-align:center;color:#666;font-size:0.9em;}
-input,textarea,button{width:100%;padding:10px;margin:5px 0;box-sizing:border-box;border-radius:6px;border:1px solid #ccc;font-size:1em;}
-button{background:#007bff;color:#fff;border:none;cursor:pointer;transition:0.3s;}
-button:hover{background:#0056b3;}
-.flex{display:flex;gap:5px;}
+body{margin:0;font-family:sans-serif;background:#0f1221;color:#e8ebff;}
+header{padding:10px;background:#171a2b;display:flex;justify-content:space-between;align-items:center;}
+main{padding:10px;overflow-y:auto;height:70vh;}
+footer{padding:10px;background:#121527;display:flex;gap:10px;}
+input,textarea{flex:1;padding:6px;border-radius:6px;border:none;background:#1c2040;color:#e8ebff;}
+button{padding:6px 12px;border:none;border-radius:6px;background:#6c8cff;color:#fff;cursor:pointer;}
+.msg{margin:6px 0;padding:8px;border-radius:10px;background:#1c2040;}
+.msg.self{background:#2a356b;text-align:right;}
 </style>
 </head>
 <body>
-<div id="app">
-  <h2>🌐 サーバーなしP2Pチャット</h2>
-  <div id="log"></div>
+<header>
+  <div>min2 Chat</div>
+  <div id="userCount">オンライン: -</div>
+</header>
+<main id="messages"></main>
+<footer>
+  <input type="text" id="username" placeholder="名前" maxlength="24" />
+  <textarea id="messageInput" placeholder="メッセージ" rows="1"></textarea>
+  <button id="sendBtn">送信</button>
+</footer>
 
-  <div class="flex">
-    <input id="name" placeholder="あなたの名前">
-  </div>
-  <div class="flex">
-    <input id="msg" placeholder="メッセージを入力">
-    <button id="send">送信</button>
-  </div>
-
-  <h3>接続操作</h3>
-  <button id="makeOffer">① オファーを作成（最初の人）</button>
-  <button id="makeAnswer">② アンサーを作成（参加する人）</button>
-
-  <textarea id="signal" placeholder="ここにオファー／アンサーを貼り付け or コピー"></textarea>
-  <div class="flex">
-    <button id="copy">コピー</button>
-    <button id="connect">接続</button>
-  </div>
-</div>
-
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous"></script>
 <script>
-let pc, channel;
-const servers = {iceServers:[{urls:"stun:stun.l.google.com:19302"}]};
-const logDiv = document.getElementById("log");
+(() => {
+  const SERVER_URL = 'https://あなたのサーバーのURL'; // ←ここを自分のSocket.IOサーバーURLに変更
+  const socket = io(SERVER_URL);
 
-function addLog(text, cls="system"){
-  const div=document.createElement("div");
-  div.textContent=text;
-  div.className="msg "+cls;
-  logDiv.appendChild(div);
-  logDiv.scrollTop=logDiv.scrollHeight;
-}
-
-// 送信処理
-document.getElementById("send").onclick=()=>{
-  if(!channel || channel.readyState!=="open") return;
-  const name=document.getElementById("name").value.trim()||"匿名";
-  const text=document.getElementById("msg").value.trim();
-  if(!text) return;
-  const data={name,text};
-  channel.send(JSON.stringify(data));
-  addLog(`${name}: ${text}`,"me");
-  document.getElementById("msg").value="";
-};
-
-// オファー作成
-document.getElementById("makeOffer").onclick=async()=>{
-  pc=new RTCPeerConnection(servers);
-  channel=pc.createDataChannel("chat");
-  setupChannel(channel);
-  pc.onicecandidate=e=>{
-    if(!e.candidate){
-      document.getElementById("signal").value=JSON.stringify(pc.localDescription);
-    }
+  const el = {
+    messages: document.getElementById('messages'),
+    username: document.getElementById('username'),
+    messageInput: document.getElementById('messageInput'),
+    sendBtn: document.getElementById('sendBtn'),
+    userCount: document.getElementById('userCount')
   };
-  const offer=await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  addLog("📤 オファーを生成しました。相手に送ってください。");
-};
 
-// アンサー作成
-document.getElementById("makeAnswer").onclick=()=>{
-  pc=new RTCPeerConnection(servers);
-  pc.ondatachannel=e=>{
-    channel=e.channel;
-    setupChannel(channel);
-  };
-  pc.onicecandidate=e=>{
-    if(!e.candidate){
-      document.getElementById("signal").value=JSON.stringify(pc.localDescription);
-    }
-  };
-  addLog("📥 オファーを貼り付けて「接続」を押してください。");
-};
+  let myName = localStorage.getItem('chat_username') || '';
 
-// 接続
-document.getElementById("connect").onclick=async()=>{
-  const txt=document.getElementById("signal").value.trim();
-  if(!txt) return alert("接続データを入力してください。");
-  const desc=JSON.parse(txt);
-  await pc.setRemoteDescription(desc);
-  if(desc.type==="offer"){
-    const answer=await pc.createAnswer();
-    await pc.setLocalDescription(answer);
+  el.username.value = myName;
+
+  function nowTimeString(){
+    const d = new Date();
+    return d.toLocaleString();
   }
-  addLog("⏳ 接続中...");
-};
 
-// コピー
-document.getElementById("copy").onclick=()=>{
-  navigator.clipboard.writeText(document.getElementById("signal").value);
-  alert("コピーしました！");
-};
+  function renderMessage(msg){
+    const div = document.createElement('div');
+    div.className = 'msg' + (msg.seed===localStorage.getItem('chat_seed')?' self':'');
+    div.textContent = `[${msg.time}] ${msg.username}: ${msg.message}`;
+    el.messages.appendChild(div);
+    el.messages.scrollTop = el.messages.scrollHeight;
+  }
 
-// チャンネル設定
-function setupChannel(ch){
-  channel=ch;
-  channel.onopen=()=>addLog("✅ 接続成功！チャット開始できます。");
-  channel.onmessage=e=>{
-    const data=JSON.parse(e.data);
-    addLog(`${data.name}: ${data.text}`,"other");
-  };
-}
+  socket.on('connect', ()=>{ console.log('接続完了'); });
+  socket.on('disconnect', ()=>{ console.log('切断'); });
+
+  socket.on('initMessages', (msgs)=>{
+    el.messages.innerHTML='';
+    msgs.forEach(renderMessage);
+  });
+
+  socket.on('newMessage', renderMessage);
+
+  socket.on('clearMessages', ()=>{
+    el.messages.innerHTML='';
+    alert('管理者により全メッセージ削除されました');
+  });
+
+  socket.on('userCount', (count)=>{
+    el.userCount.textContent = `オンライン: ${count}`;
+  });
+
+  el.sendBtn.addEventListener('click', sendMessage);
+  el.messageInput.addEventListener('keydown', e=>{
+    if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendMessage(); }
+  });
+
+  function sendMessage(){
+    const txt = el.messageInput.value.trim();
+    if(!txt) return;
+    let seed = localStorage.getItem('chat_seed');
+    if(!seed){ seed = crypto.randomUUID(); localStorage.setItem('chat_seed', seed); }
+    myName = el.username.value.trim() || '匿名';
+    localStorage.setItem('chat_username', myName);
+    const msg = { username: myName, message: txt, seed, time: nowTimeString() };
+    socket.emit('sendMessage', msg);
+    el.messageInput.value='';
+  }
+
+})();
 </script>
 </body>
 </html>
