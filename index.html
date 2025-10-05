@@ -1,127 +1,101 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>min2 Chat - ルーム機能付き</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>P2P Chat</title>
 <style>
-body{margin:0;font-family:sans-serif;background:#0f1221;color:#e8ebff;}
-header{padding:10px;background:#171a2b;display:flex;justify-content:space-between;align-items:center;}
-main{padding:10px;overflow-y:auto;height:60vh;}
-footer{padding:10px;background:#121527;display:flex;gap:5px;align-items:center;}
-input,textarea,select{flex:1;padding:6px;border-radius:6px;border:none;background:#1c2040;color:#e8ebff;}
-button{padding:6px 12px;border:none;border-radius:6px;background:#6c8cff;color:#fff;cursor:pointer;}
-.msg{margin:6px 0;padding:8px;border-radius:10px;background:#1c2040;}
+body{font-family:sans-serif;background:#0f1221;color:#e8ebff;margin:0;padding:0;}
+.container{max-width:600px;margin:20px auto;padding:10px;}
+textarea,input,button{width:100%;margin-top:5px;padding:8px;border-radius:6px;border:none;background:#1c2040;color:#e8ebff;}
+button{cursor:pointer;background:#6c8cff;color:#fff;}
+#messages{border:1px solid #333;height:300px;overflow-y:auto;padding:5px;margin-top:10px;}
+.msg{margin:5px 0;padding:6px;border-radius:6px;background:#1c2040;}
 .msg.self{background:#2a356b;text-align:right;}
 </style>
 </head>
 <body>
-<header>
-  <div>min2 Chat</div>
-  <div id="userCount">オンライン: -</div>
-</header>
-<main id="messages"></main>
-<footer>
-  <select id="roomSelect"></select>
-  <input type="text" id="username" placeholder="名前" maxlength="24" />
-  <textarea id="messageInput" placeholder="メッセージ" rows="1"></textarea>
+<div class="container">
+  <h2>P2P Chat (コピペ方式)</h2>
+
+  <label>自分の名前</label>
+  <input type="text" id="username" placeholder="名前">
+
+  <button id="createOffer">オファー作成</button>
+  <textarea id="offerOutput" placeholder="ここにオファーが生成されます" rows="4"></textarea>
+
+  <label>相手のオファー/アンサーを貼り付け</label>
+  <textarea id="inputSDP" placeholder="ここにオファーまたはアンサーを貼り付け"></textarea>
+  <button id="setRemote">貼り付けを送信</button>
+
+  <div id="messages"></div>
+
+  <input type="text" id="messageInput" placeholder="メッセージ">
   <button id="sendBtn">送信</button>
-  <button id="createRoomBtn">ルーム作成</button>
-</footer>
+</div>
 
-<script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous"></script>
 <script>
-(() => {
-  const SERVER_URL = 'https://あなたのサーバーのURL'; // ←自分のSocket.IOサーバーに変更
-  const socket = io(SERVER_URL);
+let localConnection = new RTCPeerConnection();
+let dataChannel = null;
+let username = '';
+const messagesEl = document.getElementById('messages');
+const offerOutput = document.getElementById('offerOutput');
+const inputSDP = document.getElementById('inputSDP');
 
-  const el = {
-    messages: document.getElementById('messages'),
-    username: document.getElementById('username'),
-    messageInput: document.getElementById('messageInput'),
-    sendBtn: document.getElementById('sendBtn'),
-    userCount: document.getElementById('userCount'),
-    roomSelect: document.getElementById('roomSelect'),
-    createRoomBtn: document.getElementById('createRoomBtn')
-  };
+document.getElementById('username').addEventListener('input', e=>{
+  username = e.target.value.trim() || '匿名';
+});
 
-  let myName = localStorage.getItem('chat_username') || '';
-  let mySeed = localStorage.getItem('chat_seed') || crypto.randomUUID();
-  localStorage.setItem('chat_seed', mySeed);
+function addMessage(msg,isSelf=false){
+  const div = document.createElement('div');
+  div.className='msg'+(isSelf?' self':'');
+  div.textContent=msg;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop=messagesEl.scrollHeight;
+}
 
-  el.username.value = myName;
+// オファー作成
+document.getElementById('createOffer').onclick=async ()=>{
+  dataChannel = localConnection.createDataChannel('chat');
+  dataChannel.onmessage=e=>addMessage(e.data,false);
 
-  let currentRoom = 'general';
-
-  function nowTimeString(){
-    const d = new Date();
-    return d.toLocaleString();
+  localConnection.onicecandidate = e=>{
+    if(e.candidate===null){
+      offerOutput.value = JSON.stringify(localConnection.localDescription);
+    }
   }
 
-  function renderMessage(msg){
-    const div = document.createElement('div');
-    div.className = 'msg' + (msg.seed===mySeed?' self':'');
-    div.textContent = `[${msg.time}] ${msg.username}: ${msg.message}`;
-    el.messages.appendChild(div);
-    el.messages.scrollTop = el.messages.scrollHeight;
+  const offer = await localConnection.createOffer();
+  await localConnection.setLocalDescription(offer);
+};
+
+// リモートSDP設定
+document.getElementById('setRemote').onclick=async ()=>{
+  const sdp = JSON.parse(inputSDP.value.trim());
+  if(sdp.type==='offer'){
+    localConnection.ondatachannel = e=>{
+      dataChannel = e.channel;
+      dataChannel.onmessage = e=>addMessage(e.data,false);
+    };
+    await localConnection.setRemoteDescription(sdp);
+    const answer = await localConnection.createAnswer();
+    await localConnection.setLocalDescription(answer);
+    offerOutput.value = JSON.stringify(localConnection.localDescription);
+  } else if(sdp.type==='answer'){
+    await localConnection.setRemoteDescription(sdp);
   }
+  inputSDP.value='';
+};
 
-  function joinRoom(room){
-    currentRoom = room;
-    el.messages.innerHTML='';
-    socket.emit('joinRoom', room);
+// メッセージ送信
+document.getElementById('sendBtn').onclick=()=>{
+  const msg = document.getElementById('messageInput').value.trim();
+  if(msg && dataChannel && dataChannel.readyState==='open'){
+    dataChannel.send(username+': '+msg);
+    addMessage(username+': '+msg,true);
+    document.getElementById('messageInput').value='';
   }
-
-  socket.on('connect', ()=>{ console.log('接続完了'); });
-  socket.on('disconnect', ()=>{ console.log('切断'); });
-
-  socket.on('roomList', (rooms)=>{
-    el.roomSelect.innerHTML='';
-    rooms.forEach(r=>{
-      const opt = document.createElement('option');
-      opt.value = r;
-      opt.textContent = r;
-      el.roomSelect.appendChild(opt);
-    });
-    el.roomSelect.value = currentRoom;
-  });
-
-  socket.on('initMessages', (msgs)=>{
-    el.messages.innerHTML='';
-    msgs.forEach(renderMessage);
-  });
-
-  socket.on('newMessage', renderMessage);
-
-  socket.on('userCount', (count)=>{
-    el.userCount.textContent = `オンライン: ${count}`;
-  });
-
-  el.sendBtn.addEventListener('click', sendMessage);
-  el.messageInput.addEventListener('keydown', e=>{
-    if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendMessage(); }
-  });
-
-  el.roomSelect.addEventListener('change', e=>{
-    joinRoom(e.target.value);
-  });
-
-  el.createRoomBtn.addEventListener('click', ()=>{
-    const room = prompt('新しいルーム名を入力してください').trim();
-    if(room) socket.emit('createRoom', room);
-  });
-
-  function sendMessage(){
-    const txt = el.messageInput.value.trim();
-    if(!txt) return;
-    myName = el.username.value.trim() || '匿名';
-    localStorage.setItem('chat_username', myName);
-    const msg = { username: myName, message: txt, seed: mySeed, time: nowTimeString(), room: currentRoom };
-    socket.emit('sendMessage', msg);
-    el.messageInput.value='';
-  }
-
-})();
+};
 </script>
 </body>
 </html>
