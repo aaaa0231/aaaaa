@@ -1,187 +1,116 @@
-<!DOCTYPE html>
-<html lang="ja">
+<!doctype html>
+<html>
 <head>
-<meta charset="UTF-8">
-<title>サーバー無しP2Pチャット</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-body{font-family:sans-serif;background:#eaeaea;margin:0;padding:0;}
-#roomDiv,#chat{max-width:600px;margin:20px auto;background:#fff;padding:15px;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,0.1);}
-#messages{height:300px;overflow-y:auto;margin-bottom:10px;display:flex;flex-direction:column;}
-.msg-card{border-radius:10px;padding:8px 12px;margin:5px 0;max-width:80%;}
-.msg-card.you{background:#d1ffd1;color:#006600;align-self:flex-end;}
-.msg-card.other{background:#d1e0ff;color:#003366;align-self:flex-start;}
-.msg-card.system{background:#f0f0f0;color:#666;font-style:italic;align-self:center;}
-#users{margin:10px 0;font-weight:bold;display:flex;flex-wrap:wrap;gap:5px;}
-.user-icon{background:#ddd;border-radius:50%;width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-size:14px;}
-.roomItem{cursor:pointer;background:#007bff;color:white;padding:5px 10px;border-radius:8px;margin:3px 0;display:block;text-align:center;}
-input,button,textarea{width:100%;padding:8px;margin:5px 0;border-radius:8px;border:1px solid #ccc;}
-#progressContainer{margin:5px 0;}
-</style>
+  <meta charset="utf-8">
+  <title>Simple Multi Chat</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body{font-family: Arial, sans-serif; background:#f7f7f7; padding:10px;}
+    #app{max-width:800px;margin:0 auto;background:white;padding:15px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.08)}
+    #messages{height:400px;overflow:auto;border:1px solid #eee;padding:8px;margin-bottom:10px;background:#fff;}
+    .msg{margin:6px 0}
+    .sys{color:#666;font-style:italic}
+    .me{color:green}
+    .peer{color:blue}
+    #controls input, #controls button {padding:8px;margin:4px 0;width:100%;}
+    .row{display:flex;gap:8px}
+    .row input{flex:1}
+  </style>
 </head>
 <body>
+<div id="app">
+  <h2>Simple Multi Chat</h2>
 
-<div id="roomDiv">
-<h2>ルーム作成 / ルーム一覧</h2>
-<input id="roomName" placeholder="ルーム名">
-<input id="roomPass" placeholder="パスワード（任意）">
-<button id="createRoom">ルーム作成</button>
+  <div id="lobby">
+    <input id="roomInput" placeholder="ルーム名 (例: lobby)" />
+    <input id="nameInput" placeholder="あなたの名前" />
+    <button id="joinBtn">参加 / ルーム作成</button>
+  </div>
 
-<h3>ルーム一致欄</h3>
-<div id="roomList" style="max-height:200px;overflow-y:auto;"></div>
-</div>
+  <div id="chatArea" style="display:none">
+    <div id="messages"></div>
 
-<div id="chat" style="display:none">
-<h2>🌐 P2Pチャット</h2>
-<div id="users"></div>
-<div id="messages"></div>
-<input id="name" placeholder="名前を入力">
-<input id="text" placeholder="メッセージを入力">
-<button id="send">送信</button>
-<button id="voice">音声ON/OFF</button>
-<input type="file" id="fileInput">
-<div id="progressContainer" style="display:none;">
-  <progress id="fileProgress" value="0" max="100"></progress>
-  <span id="fileProgressLabel"></span>
-</div>
-<hr>
-<h3>接続</h3>
-<textarea id="signal" placeholder="接続データ"></textarea>
-<button id="copy">接続データをコピー</button>
-<button id="connect">接続</button>
+    <div id="controls">
+      <div class="row">
+        <input id="msgInput" placeholder="メッセージを入力" />
+        <button id="sendBtn">送信</button>
+      </div>
+      <button id="leaveBtn">退出</button>
+    </div>
+  </div>
 </div>
 
 <script>
-// ==== ルーム管理（ローカル） ====
-let rooms = []; // {name, password}
-let connectedUsers = [];
-let localName="", localStream=null;
-let pcList={}, channelList={};
+(function(){
+  let ws;
+  const messagesEl = document.getElementById('messages');
+  const roomInput = document.getElementById('roomInput');
+  const nameInput = document.getElementById('nameInput');
+  const joinBtn = document.getElementById('joinBtn');
+  const chatArea = document.getElementById('chatArea');
+  const lobby = document.getElementById('lobby');
+  const msgInput = document.getElementById('msgInput');
+  const sendBtn = document.getElementById('sendBtn');
+  const leaveBtn = document.getElementById('leaveBtn');
 
-// ==== ルーム作成 ====
-document.getElementById("createRoom").onclick = () => {
-  const name = document.getElementById("roomName").value.trim();
-  const pass = document.getElementById("roomPass").value.trim();
-  if(!name) return alert("ルーム名を入力");
-  if(rooms.find(r=>r.name===name)) return alert("同名ルームがあります");
-  rooms.push({name,password:pass});
-  renderRoomList();
-}
-
-// ==== ルーム一覧表示 ====
-function renderRoomList(){
-  const roomListDiv = document.getElementById("roomList");
-  roomListDiv.innerHTML = "";
-  rooms.forEach(r => {
-    const div = document.createElement("div");
-    div.textContent = r.name + (r.password ? " 🔒" : "");
-    div.className = "roomItem";
-    div.onclick = ()=>joinRoom(r);
-    roomListDiv.appendChild(div);
-  });
-}
-
-// ==== ルーム参加 ====
-function joinRoom(room){
-  if(room.password){
-    const input = prompt("パスワードを入力");
-    if(input !== room.password) return alert("パスワードが違います");
+  function append(text, cls='msg') {
+    const d = document.createElement('div');
+    d.className = cls;
+    d.textContent = text;
+    messagesEl.appendChild(d);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
   }
-  document.getElementById("roomDiv").style.display="none";
-  document.getElementById("chat").style.display="block";
-  log("システム: "+room.name+" に入室", "system");
-}
 
-// ==== ユーザー表示 ====
-function addUser(name){if(!connectedUsers.includes(name)){connectedUsers.push(name); renderUsers();}}
-function removeUser(name){connectedUsers = connectedUsers.filter(n=>n!==name); renderUsers();}
-function renderUsers(){
-  const div=document.getElementById("users"); div.innerHTML="";
-  connectedUsers.forEach(u=>{
-    const icon=document.createElement("div"); icon.className="user-icon"; icon.textContent=u[0].toUpperCase(); div.appendChild(icon);
-  });
-}
+  joinBtn.onclick = () => {
+    const room = roomInput.value.trim() || 'default';
+    const name = nameInput.value.trim() || '匿名';
+    // connect to WS server (adjust host/port as needed)
+    const base = location.hostname === 'localhost' ? `ws://${location.hostname}:3000/ws` : `wss://${location.hostname}/ws`;
+    // If server hosted elsewhere, change URL like 'wss://your-domain/ws'
+    const wsUrl = (window.CHAT_WS_URL && window.CHAT_WS_URL.length) ? window.CHAT_WS_URL : base;
+    ws = new WebSocket(wsUrl);
 
-// ==== メッセージ表示 ====
-function log(msg,who="system"){
-  const container=document.createElement("div");
-  const card=document.createElement("div"); card.textContent=msg; card.className="msg-card "+who;
-  container.appendChild(card); document.getElementById("messages").appendChild(container);
-  document.getElementById("messages").scrollTop=9999;
-}
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type:'join', room, name }));
+      lobby.style.display = 'none';
+      chatArea.style.display = 'block';
+      append(`あなたは ${name} として ${room} に参加しました`, 'sys');
+    };
+    ws.onmessage = (ev) => {
+      let m;
+      try { m = JSON.parse(ev.data); } catch(e){ return; }
+      if (m.type === 'system') append(m.text, 'sys');
+      else if (m.type === 'chat') {
+        const who = (m.name === name) ? 'me' : 'peer';
+        append(`${m.name}: ${m.text}`, who);
+      }
+    };
+    ws.onclose = () => {
+      append('接続が切れました', 'sys');
+      lobby.style.display = '';
+      chatArea.style.display = 'none';
+    };
+    ws.onerror = (e) => { console.error(e); append('通信エラー', 'sys'); };
+  };
 
-// ==== P2P接続 ====
-let servers={iceServers:[{urls:"stun:stun.l.google.com:19302"}]};
-function createPeer(id,offer=false){
-  const pc=new RTCPeerConnection(servers);
-  if(localStream) pc.addTrack(localStream.getTracks()[0],localStream);
-  if(offer){const ch=pc.createDataChannel("chat"); channelList[id]=ch; setupChannel(ch);}
-  else{pc.ondatachannel=e=>{const ch=e.channel; channelList[id]=ch; setupChannel(ch);}}
-  pc.onicecandidate=e=>{if(e.candidate) return; document.getElementById("signal").value=JSON.stringify(pc.localDescription);}
-  pc.ontrack=e=>{const audio=document.createElement("audio"); audio.srcObject=e.streams[0]; audio.autoplay=true; audio.playsInline=true; document.body.appendChild(audio);}
-  pc.onconnectionstatechange=e=>{if(pc.connectionState==="disconnected"||pc.connectionState==="failed") removeUser(id);}
-  pcList[id]=pc; return pc;
-}
-function setupChannel(ch){ch.onmessage=e=>{
-  const data=JSON.parse(e.data);
-  if(data.type==="text") log(`${data.name}: ${data.text}`, "other");
-  else if(data.type==="fileChunk"){
-    if(!window.fileBuffer) window.fileBuffer={};
-    if(!window.fileBuffer[data.filename]) window.fileBuffer[data.filename]=[];
-    window.fileBuffer[data.filename].push(data.chunk);
-    const receivedSize=window.fileBuffer[data.filename].reduce((acc,c)=>acc+c.length,0);
-    const progress=(receivedSize/data.total)*100;
-    document.getElementById("progressContainer").style.display="block";
-    document.getElementById("fileProgress").value=progress;
-    document.getElementById("fileProgressLabel").textContent=`${Math.round(progress)}%`;
-    if(receivedSize>=data.total){
-      const blob=new Blob(window.fileBuffer[data.filename],{type:data.blobType});
-      const url=URL.createObjectURL(blob);
-      const a=document.createElement("a"); a.href=url; a.download=data.filename; a.textContent="💾 ダウンロード"; log(`${data.name}がファイル受信完了: ${data.filename}`,"system");
-      document.getElementById("messages").appendChild(a);
-      delete window.fileBuffer[data.filename];
-      document.getElementById("progressContainer").style.display="none";
+  sendBtn.onclick = () => {
+    const text = msgInput.value.trim();
+    if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+    const room = roomInput.value.trim() || 'default';
+    const name = nameInput.value.trim() || '匿名';
+    ws.send(JSON.stringify({ type:'chat', room, name, text }));
+    msgInput.value = '';
+  };
+  msgInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendBtn.click(); });
+
+  leaveBtn.onclick = () => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type:'leave' }));
+      ws.close();
     }
-  }
-}}
+  };
 
-// ==== 接続ボタン ====
-async function makeOffer(){const id="peer_"+Math.random().toString(36).substr(2,5); const pc=createPeer(id,true); addUser(id); const offer=await pc.createOffer(); await pc.setLocalDescription(offer); document.getElementById("signal").value=JSON.stringify(offer); log("オファーコピーして送信");}
-async function connectToPeer(){const data=document.getElementById("signal").value.trim(); if(!data) return; const desc=JSON.parse(data); const id="peer_"+Math.random().toString(36).substr(2,5); const pc=createPeer(id,desc.type==="offer"?false:true); addUser(id); await pc.setRemoteDescription(desc); if(desc.type==="offer"){const answer=await pc.createAnswer(); await pc.setLocalDescription(answer);}}
-document.getElementById("copy").onclick=makeOffer; document.getElementById("connect").onclick=connectToPeer;
-
-// ==== メッセージ送信 ====
-document.getElementById("send").onclick=()=>{
-  const text=document.getElementById("text").value.trim();
-  localName=document.getElementById("name").value.trim()||"匿名";
-  if(!text) return;
-  log(`${localName}: ${text}`, "you");
-  for(const id in channelList) channelList[id].send(JSON.stringify({type:"text",name:localName,text}));
-  document.getElementById("text").value="";
-}
-
-// ==== 音声ON/OFF ====
-let voiceEnabled=false;
-document.getElementById("voice").onclick=async()=>{
-  if(!voiceEnabled){localStream=await navigator.mediaDevices.getUserMedia({audio:true}); voiceEnabled=true; document.getElementById("voice").textContent="音声OFF"; log("🎤 音声ON","system");}
-  else{localStream.getTracks().forEach(t=>t.stop()); localStream=null; voiceEnabled=false; document.getElementById("voice").textContent="音声ON"; log("🎤 音声OFF","system");}
-};
-
-// ==== ファイル送信 ====
-document.getElementById("fileInput").onchange=e=>{
-  const file=e.target.files[0]; if(!file) return; const chunkSize=64*1024; let offset=0; const reader=new FileReader();
-  document.getElementById("progressContainer").style.display="block";
-  reader.onload=()=>{
-    const chunk=new Uint8Array(reader.result);
-    for(const id in channelList) channelList[id].send(JSON.stringify({type:"fileChunk",name:localName,chunk,filename:file.name,blobType:file.type,total:file.size}));
-    offset+=chunkSize;
-    document.getElementById("fileProgress").value=(offset/file.size)*100;
-    document.getElementById("fileProgressLabel").textContent=`${Math.min(100,Math.round((offset/file.size)*100))}%`;
-    if(offset<file.size) readSlice(); else setTimeout(()=>{document.getElementById("progressContainer").style.display="none";},500);
-  }
-  function readSlice(){reader.readAsArrayBuffer(file.slice(offset,offset+chunkSize));}
-  readSlice();
-};
+})();
 </script>
 </body>
 </html>
